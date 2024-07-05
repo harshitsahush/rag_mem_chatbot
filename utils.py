@@ -1,18 +1,25 @@
 from groq import Groq
+from PyPDF2 import PdfReader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from sentence_transformers import SentenceTransformer
+import chromadb
+import os
 
-def contextualize(query, context):
-    #contextualizes the query wrt to context and returns it
+
+def contextualize(query, chat_history):
+    #contextualizes the query wrt to chat_history and returns it
+    print(chat_history)
     client = Groq(api_key = "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")
     chat_completion = client.chat.completions.create(
         messages=[
             {
                 "role" : "system",
-                "content" : """Given a chat history and the latest user question which might reference context in the chat history, formulate a standalone question  which can be understood without the chat history. Do NOT answer the question, just reformulate it if needed and otherwise return it as is. Return just the reformulated question, without any notes."""
+                "content" : """Given a chat history and the latest user question which might reference context in the chat history, formulate a standalone question  which can be understood without the chat history. Do NOT answer the question, just reformulate it if needed and otherwise return it as is. Return just the reformulated question, without any notes. If given chat history is empty, simply return the query."""
             },
 
             {
                 "role" : "user",
-                "content" : "Chat history is : " + context + "\n\n" + "Latest user question is : " + query
+                "content" : "Chat history is : " + chat_history + "\n\n" + "Latest user question is : " + query
             }
         ],
         model="llama3-70b-8192"
@@ -20,19 +27,19 @@ def contextualize(query, context):
 
     return chat_completion.choices[0].message.content
 
-def generate_response(con_query):
-    #calls groq and creates a response
+def generate_response(con_query, sim_docs):
+    #calls groq and creates a response, using query and similar docs
     client = Groq(api_key = "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")
     chat_completion = client.chat.completions.create(
         messages=[
             {
                 "role" : "system",
-                "content" : """You are a very helpful assistant. Given a standalone question, generate the appropriate answer of the question """
+                "content" : """You are a very helpful assistant. Given a question, generate the appropriate answer of the question in the given context only. If no relevant answer is found return that the answer does not exists in the given context."""
             },
 
             {
                 "role" : "user",
-                "content" : con_query
+                "content" : "Question :" + con_query + "\n\n Context : " + sim_docs['documents'][0][0]
             }
         ],
         model="llama3-70b-8192"
@@ -40,22 +47,57 @@ def generate_response(con_query):
 
     return chat_completion.choices[0].message.content
 
-def generate_context(old_context, query, response):
-    #creates new context by sending old_context, query, response to groq_api
-    client = Groq(api_key = "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")
-    chat_completion = client.chat.completions.create(
-        messages=[
-            {
-                "role" : "system",
-                "content" : """Given a chat history and the latest user question which might reference context in the chat history and the appropriate answer, formulate a new updated standalone chat history which has all the data of the older chat history, the user question and the answer."""
-            },
+def generate_chat_history(old_chat_history, query, response):
+    #why not simply append the question and answer to old chat history
+    temp = old_chat_history + "\n\nQuestion :" + query + "\n Answer : " + response
+    return temp
 
-            {
-                "role" : "user",
-                "content" : "Old chat history : " + old_context + "\n\n User question :" + query + "\n\n Answer :" + response
-            }
-        ],
-        model="llama3-70b-8192"
+def process_files(pdfs):
+    pdf_content = extract_text(pdfs)
+    chunks = create_chunks(pdf_content)
+    embeddings = create_store_embeddings(chunks)
+
+def sim_search(query):
+    #loads collection from local
+    client = chromadb.PersistentClient(path = os.getcwd())
+    collection = client.get_collection(name = "temp_collection")
+
+    model = SentenceTransformer("all-mpnet-base-v2")
+    query_embed = model.encode([query])
+
+    sim_docs = collection.query(
+        query_embeddings = query_embed,
+        n_results=1
     )
 
-    return chat_completion.choices[0].message.content
+    return sim_docs
+
+def extract_text(pdfs):
+    text = ""
+    for pdf in pdfs:
+        reader = PdfReader(pdf)
+        for page in reader.pages:
+            text += page.extract_text() + "\n\n"
+    return text
+
+def create_chunks(text):
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size = 1000, chunk_overlap = 100)
+    chunks = text_splitter.split_text(text)
+    return chunks
+
+def create_store_embeddings(chunks):
+    model = SentenceTransformer("all-mpnet-base-v2")
+    embeds = model.encode(chunks)
+
+    client = chromadb.PersistentClient(path = os.getcwd())
+    #reset collection
+    collection = client.get_or_create_collection(name = "temp_collection")
+    client.delete_collection(name = "temp_collection")
+    collection = client.create_collection("temp_collection")
+
+    collection.add(
+        documents=chunks,
+        embeddings=embeds,
+        ids = ["id" + str(i) for i in range(len(chunks))]
+    )
+

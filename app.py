@@ -17,12 +17,10 @@ submit_file = st.button("Submit and process files")
 if(submit_file):
     if(pdfs):
         st.session_state["file_processed"] = True
-        print(st.session_state["file_processed"])
+        process_files(pdfs)
 
     else:
         st.error("Please select atleast 1 file")
-
-print(st.session_state["file_processed"])
 
 
 user_query = st.text_input("Enter your message.")
@@ -31,24 +29,28 @@ submit_query = st.button("Respond")
 
 reset = st.button("Reset current session memory")
 if(reset):
-    st.session_state["context"] = ""
+    st.session_state["chat_history"] = ""
 
 
 if(submit_query):
-    print(st.session_state["file_processed"])
     if(st.session_state["file_processed"] == True):
         if(user_query):
-            if("context" not in st.session_state):
-                st.session_state["context"] = ""
-            
-            context = st.session_state["context"]
+            if("chat_history" not in st.session_state):
+                st.session_state["chat_history"] = ""
+            chat_history = st.session_state["chat_history"]
 
-            con_query = contextualize(user_query, context)
-            query_response = generate_response(con_query)
-            new_context = generate_context(context, con_query, query_response)
+            #if chat history is empty, no need to contextualize
+            if chat_history != "":
+                con_query = contextualize(user_query, chat_history)
+            else:
+                con_query = user_query
+                
+            sim_docs = sim_search(con_query)
+            query_response = generate_response(con_query, sim_docs)
+            new_chat_history = generate_chat_history(chat_history, con_query, query_response)
 
-            #store new context in session
-            st.session_state["context"] = new_context
+            #store new chat_history in session
+            st.session_state["chat_history"] = new_chat_history
 
             st.success(query_response)
 
